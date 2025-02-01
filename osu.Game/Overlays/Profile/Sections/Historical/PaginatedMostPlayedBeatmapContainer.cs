@@ -14,12 +14,11 @@ using APIUser = osu.Game.Online.API.Requests.Responses.APIUser;
 
 namespace osu.Game.Overlays.Profile.Sections.Historical
 {
-    public class PaginatedMostPlayedBeatmapContainer : PaginatedProfileSubsection<APIUserMostPlayedBeatmap>
+    public partial class PaginatedMostPlayedBeatmapContainer : PaginatedProfileSubsection<APIUserMostPlayedBeatmap>
     {
-        public PaginatedMostPlayedBeatmapContainer(Bindable<APIUser> user)
+        public PaginatedMostPlayedBeatmapContainer(Bindable<UserProfileData?> user)
             : base(user, UsersStrings.ShowExtraHistoricalMostPlayedTitle)
         {
-            ItemsPerPage = 5;
         }
 
         [BackgroundDependencyLoader]
@@ -30,8 +29,8 @@ namespace osu.Game.Overlays.Profile.Sections.Historical
 
         protected override int GetCount(APIUser user) => user.BeatmapPlayCountsCount;
 
-        protected override APIRequest<List<APIUserMostPlayedBeatmap>> CreateRequest() =>
-            new GetUserMostPlayedBeatmapsRequest(User.Value.Id, VisiblePages++, ItemsPerPage);
+        protected override APIRequest<List<APIUserMostPlayedBeatmap>> CreateRequest(UserProfileData user, PaginationParameters pagination) =>
+            new GetUserMostPlayedBeatmapsRequest(user.User.Id, pagination);
 
         protected override Drawable CreateDrawableItem(APIUserMostPlayedBeatmap mostPlayed) =>
             new DrawableMostPlayedBeatmap(mostPlayed);

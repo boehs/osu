@@ -10,7 +10,7 @@ using osuTK.Input;
 
 namespace osu.Game.Tests.Visual.Navigation
 {
-    public class TestSceneMouseWheelVolumeAdjust : OsuGameTestScene
+    public partial class TestSceneMouseWheelVolumeAdjust : OsuGameTestScene
     {
         public override void SetUpSteps()
         {
@@ -56,7 +56,11 @@ namespace osu.Game.Tests.Visual.Navigation
 
             // First scroll makes volume controls appear, second adjusts volume.
             AddRepeatStep("Adjust volume using mouse wheel", () => InputManager.ScrollVerticalBy(5), 10);
-            AddAssert("Volume is still zero", () => Game.Audio.Volume.Value == 0);
+            AddAssert("Volume is still zero", () => Game.Audio.Volume.Value, () => Is.Zero);
+
+            AddStep("Pause", () => InputManager.PressKey(Key.Escape));
+            AddRepeatStep("Adjust volume using mouse wheel", () => InputManager.ScrollVerticalBy(5), 10);
+            AddAssert("Volume is above zero", () => Game.Audio.Volume.Value > 0);
         }
 
         [Test]
@@ -78,8 +82,8 @@ namespace osu.Game.Tests.Visual.Navigation
 
         private void loadToPlayerNonBreakTime()
         {
-            Player player = null;
-            Screens.Select.SongSelect songSelect = null;
+            Player? player = null;
+            Screens.Select.SongSelect songSelect = null!;
             PushAndConfirm(() => songSelect = new TestSceneScreenNavigation.TestPlaySongSelect());
             AddUntilStep("wait for song select", () => songSelect.BeatmapSetsLoaded);
 
@@ -89,18 +93,11 @@ namespace osu.Game.Tests.Visual.Navigation
 
             AddUntilStep("wait for player", () =>
             {
-                // dismiss any notifications that may appear (ie. muted notification).
-                clickMouseInCentre();
+                DismissAnyNotifications();
                 return (player = Game.ScreenStack.CurrentScreen as Player) != null;
             });
 
-            AddUntilStep("wait for play time active", () => !player.IsBreakTime.Value);
-        }
-
-        private void clickMouseInCentre()
-        {
-            InputManager.MoveMouseTo(Game.ScreenSpaceDrawQuad.Centre);
-            InputManager.Click(MouseButton.Left);
+            AddUntilStep("wait for play time active", () => player!.IsBreakTime.Value, () => Is.False);
         }
     }
 }

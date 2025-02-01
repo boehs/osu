@@ -3,6 +3,8 @@
 
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
+using System.Diagnostics;
 using System.Linq;
 using osu.Framework.Allocation;
 using osu.Framework.Audio;
@@ -11,27 +13,31 @@ using osu.Framework.Bindables;
 using osu.Framework.Extensions.Color4Extensions;
 using osu.Framework.Graphics;
 using osu.Framework.Graphics.Containers;
+using osu.Framework.Graphics.Cursor;
 using osu.Framework.Graphics.Shapes;
 using osu.Framework.Screens;
 using osu.Game.Audio;
 using osu.Game.Beatmaps;
+using osu.Game.Graphics.Cursor;
+using osu.Game.Online.API;
 using osu.Game.Online.Rooms;
 using osu.Game.Overlays;
 using osu.Game.Overlays.Mods;
 using osu.Game.Rulesets;
 using osu.Game.Rulesets.Mods;
+using osu.Game.Screens.Menu;
 using osu.Game.Screens.OnlinePlay.Match.Components;
 using osu.Game.Screens.OnlinePlay.Multiplayer;
+using Container = osu.Framework.Graphics.Containers.Container;
 
 namespace osu.Game.Screens.OnlinePlay.Match
 {
     [Cached(typeof(IPreviewTrackOwner))]
-    public abstract class RoomSubScreen : OnlinePlaySubScreen, IPreviewTrackOwner
+    public abstract partial class RoomSubScreen : OnlinePlaySubScreen, IPreviewTrackOwner
     {
-        [Cached(typeof(IBindable<PlaylistItem>))]
-        public readonly Bindable<PlaylistItem> SelectedItem = new Bindable<PlaylistItem>();
+        public readonly Bindable<PlaylistItem?> SelectedItem = new Bindable<PlaylistItem?>();
 
-        public override bool? AllowTrackAdjustments => true;
+        public override bool? ApplyModTrackAdjustments => true;
 
         protected override BackgroundScreen CreateBackground() => new RoomBackgroundScreen(Room.Playlist.FirstOrDefault())
         {
@@ -44,28 +50,38 @@ namespace osu.Game.Screens.OnlinePlay.Match
         /// A container that provides controls for selection of user mods.
         /// This will be shown/hidden automatically when applicable.
         /// </summary>
-        protected Drawable UserModsSection;
+        protected Drawable? UserModsSection;
 
-        private Sample sampleStart;
+        private Sample? sampleStart;
 
         /// <summary>
         /// Any mods applied by/to the local user.
         /// </summary>
         protected readonly Bindable<IReadOnlyList<Mod>> UserMods = new Bindable<IReadOnlyList<Mod>>(Array.Empty<Mod>());
 
-        protected readonly IBindable<long?> RoomId = new Bindable<long?>();
+        [Resolved(CanBeNull = true)]
+        private IOverlayManager? overlayManager { get; set; }
 
         [Resolved]
-        private MusicController music { get; set; }
+        private MusicController music { get; set; } = null!;
 
         [Resolved]
-        private BeatmapManager beatmapManager { get; set; }
+        private BeatmapManager beatmapManager { get; set; } = null!;
 
         [Resolved]
-        private RulesetStore rulesets { get; set; }
+        protected RulesetStore Rulesets { get; private set; } = null!;
+
+        [Resolved]
+        protected IAPIProvider API { get; private set; } = null!;
 
         [Resolved(canBeNull: true)]
-        protected OnlinePlayScreen ParentScreen { get; private set; }
+        protected OnlinePlayScreen? ParentScreen { get; private set; }
+
+        [Resolved]
+        private PreviewTrackManager previewTrackManager { get; set; } = null!;
+
+        [Resolved(canBeNull: true)]
+        protected IDialogOverlay? DialogOverlay { get; private set; }
 
         [Cached]
         private readonly OnlinePlayBeatmapAvailabilityTracker beatmapAvailabilityTracker = new OnlinePlayBeatmapAvailabilityTracker();
@@ -75,9 +91,11 @@ namespace osu.Game.Screens.OnlinePlay.Match
         public readonly Room Room;
         private readonly bool allowEdit;
 
-        private ModSelectOverlay userModsSelectOverlay;
-        private RoomSettingsOverlay settingsOverlay;
-        private Drawable mainContent;
+        internal ModSelectOverlay UserModsSelectOverlay { get; private set; } = null!;
+
+        private IDisposable? userModsSelectOverlayRegistration;
+        private RoomSettingsOverlay settingsOverlay = null!;
+        private Drawable mainContent = null!;
 
         /// <summary>
         /// Creates a new <see cref="RoomSubScreen"/>.
@@ -90,8 +108,6 @@ namespace osu.Game.Screens.OnlinePlay.Match
             this.allowEdit = allowEdit;
 
             Padding = new MarginPadding { Top = Header.HEIGHT };
-
-            RoomId.BindTo(room.RoomID);
         }
 
         [BackgroundDependencyLoader]
@@ -99,177 +115,195 @@ namespace osu.Game.Screens.OnlinePlay.Match
         {
             sampleStart = audio.Samples.Get(@"SongSelect/confirm-selection");
 
-            InternalChildren = new Drawable[]
+            InternalChild = new PopoverContainer
             {
-                beatmapAvailabilityTracker,
-                new MultiplayerRoomSounds(),
-                new GridContainer
+                RelativeSizeAxes = Axes.Both,
+                Children = new Drawable[]
                 {
-                    RelativeSizeAxes = Axes.Both,
-                    RowDimensions = new[]
+                    beatmapAvailabilityTracker,
+                    new MultiplayerRoomSounds(),
+                    new GridContainer
                     {
-                        new Dimension(),
-                        new Dimension(GridSizeMode.Absolute, 50)
-                    },
-                    Content = new[]
-                    {
-                        // Padded main content (drawable room + main content)
-                        new Drawable[]
+                        RelativeSizeAxes = Axes.Both,
+                        RowDimensions = new[]
                         {
-                            new Container
+                            new Dimension(),
+                            new Dimension(GridSizeMode.Absolute, 50)
+                        },
+                        Content = new[]
+                        {
+                            // Padded main content (drawable room + main content)
+                            new Drawable[]
                             {
-                                RelativeSizeAxes = Axes.Both,
-                                Padding = new MarginPadding
+                                new Container
                                 {
-                                    Horizontal = WaveOverlayContainer.WIDTH_PADDING,
-                                    Bottom = 30
-                                },
-                                Children = new[]
-                                {
-                                    mainContent = new GridContainer
+                                    RelativeSizeAxes = Axes.Both,
+                                    Padding = new MarginPadding
                                     {
-                                        RelativeSizeAxes = Axes.Both,
-                                        RowDimensions = new[]
+                                        Horizontal = WaveOverlayContainer.WIDTH_PADDING,
+                                        Bottom = 30
+                                    },
+                                    Children = new[]
+                                    {
+                                        mainContent = new GridContainer
                                         {
-                                            new Dimension(GridSizeMode.AutoSize),
-                                            new Dimension(GridSizeMode.Absolute, 10)
-                                        },
-                                        Content = new[]
-                                        {
-                                            new Drawable[]
+                                            RelativeSizeAxes = Axes.Both,
+                                            RowDimensions = new[]
                                             {
-                                                new DrawableMatchRoom(Room, allowEdit)
-                                                {
-                                                    OnEdit = () => settingsOverlay.Show(),
-                                                    SelectedItem = { BindTarget = SelectedItem }
-                                                }
+                                                new Dimension(GridSizeMode.AutoSize),
+                                                new Dimension(GridSizeMode.Absolute, 10)
                                             },
-                                            null,
-                                            new Drawable[]
+                                            Content = new[]
                                             {
-                                                new Container
+                                                new Drawable[]
                                                 {
-                                                    RelativeSizeAxes = Axes.Both,
-                                                    Children = new[]
+                                                    new OsuContextMenuContainer
                                                     {
-                                                        new Container
+                                                        RelativeSizeAxes = Axes.X,
+                                                        AutoSizeAxes = Axes.Y,
+                                                        Child = new DrawableMatchRoom(Room, allowEdit)
                                                         {
-                                                            RelativeSizeAxes = Axes.Both,
-                                                            Masking = true,
-                                                            CornerRadius = 10,
-                                                            Child = new Box
+                                                            OnEdit = () => settingsOverlay.Show(),
+                                                            SelectedItem = SelectedItem
+                                                        }
+                                                    }
+                                                },
+                                                null,
+                                                new Drawable[]
+                                                {
+                                                    new Container
+                                                    {
+                                                        RelativeSizeAxes = Axes.Both,
+                                                        Children = new[]
+                                                        {
+                                                            new Container
                                                             {
                                                                 RelativeSizeAxes = Axes.Both,
-                                                                Colour = Color4Extensions.FromHex(@"3e3a44") // Temporary.
+                                                                Masking = true,
+                                                                CornerRadius = 10,
+                                                                Child = new Box
+                                                                {
+                                                                    RelativeSizeAxes = Axes.Both,
+                                                                    Colour = Color4Extensions.FromHex(@"3e3a44") // Temporary.
+                                                                },
                                                             },
-                                                        },
-                                                        new Container
-                                                        {
-                                                            RelativeSizeAxes = Axes.Both,
-                                                            Padding = new MarginPadding(20),
-                                                            Child = CreateMainContent(),
-                                                        },
-                                                        new Container
-                                                        {
-                                                            Anchor = Anchor.BottomLeft,
-                                                            Origin = Anchor.BottomLeft,
-                                                            RelativeSizeAxes = Axes.X,
-                                                            AutoSizeAxes = Axes.Y,
-                                                            Child = userModsSelectOverlay = new UserModSelectOverlay
+                                                            new Container
                                                             {
-                                                                SelectedMods = { BindTarget = UserMods },
-                                                                IsValidMod = _ => false
-                                                            }
-                                                        },
+                                                                RelativeSizeAxes = Axes.Both,
+                                                                Padding = new MarginPadding(20),
+                                                                Child = CreateMainContent(),
+                                                            },
+                                                            new Container
+                                                            {
+                                                                Anchor = Anchor.BottomLeft,
+                                                                Origin = Anchor.BottomLeft,
+                                                                RelativeSizeAxes = Axes.X,
+                                                                AutoSizeAxes = Axes.Y,
+                                                            },
+                                                        }
                                                     }
                                                 }
                                             }
+                                        },
+                                        new Container
+                                        {
+                                            RelativeSizeAxes = Axes.Both,
+                                            // Resolves 1px masking errors between the settings overlay and the room panel.
+                                            Padding = new MarginPadding(-1),
+                                            Child = settingsOverlay = CreateRoomSettingsOverlay(Room)
                                         }
                                     },
-                                    new Container
-                                    {
-                                        RelativeSizeAxes = Axes.Both,
-                                        // Resolves 1px masking errors between the settings overlay and the room panel.
-                                        Padding = new MarginPadding(-1),
-                                        Child = settingsOverlay = CreateRoomSettingsOverlay(Room)
-                                    }
                                 },
                             },
-                        },
-                        // Footer
-                        new Drawable[]
-                        {
-                            new Container
+                            // Footer
+                            new Drawable[]
                             {
-                                RelativeSizeAxes = Axes.Both,
-                                Children = new Drawable[]
+                                new Container
                                 {
-                                    new Box
+                                    RelativeSizeAxes = Axes.Both,
+                                    Children = new Drawable[]
                                     {
-                                        RelativeSizeAxes = Axes.Both,
-                                        Colour = Color4Extensions.FromHex(@"28242d") // Temporary.
-                                    },
-                                    new Container
-                                    {
-                                        RelativeSizeAxes = Axes.Both,
-                                        Padding = new MarginPadding(5),
-                                        Child = CreateFooter()
-                                    },
+                                        new Box
+                                        {
+                                            RelativeSizeAxes = Axes.Both,
+                                            Colour = Color4Extensions.FromHex(@"28242d") // Temporary.
+                                        },
+                                        new Container
+                                        {
+                                            RelativeSizeAxes = Axes.Both,
+                                            Padding = new MarginPadding(5),
+                                            Child = CreateFooter()
+                                        },
+                                    }
                                 }
                             }
                         }
                     }
                 }
             };
+
+            LoadComponent(UserModsSelectOverlay = new RoomModSelectOverlay
+            {
+                SelectedItem = { BindTarget = SelectedItem },
+                SelectedMods = { BindTarget = UserMods },
+                IsValidMod = _ => false
+            });
         }
 
         protected override void LoadComplete()
         {
             base.LoadComplete();
 
-            RoomId.BindValueChanged(id =>
-            {
-                if (id.NewValue == null)
-                {
-                    // A new room is being created.
-                    // The main content should be hidden until the settings overlay is hidden, signaling the room is ready to be displayed.
-                    mainContent.Hide();
-                    settingsOverlay.Show();
-                }
-                else
-                {
-                    mainContent.Show();
-                    settingsOverlay.Hide();
-                }
-            }, true);
-
             SelectedItem.BindValueChanged(_ => Scheduler.AddOnce(selectedItemChanged));
             UserMods.BindValueChanged(_ => Scheduler.AddOnce(UpdateMods));
 
             beatmapAvailabilityTracker.SelectedItem.BindTo(SelectedItem);
             beatmapAvailabilityTracker.Availability.BindValueChanged(_ => updateWorkingBeatmap());
+
+            userModsSelectOverlayRegistration = overlayManager?.RegisterBlockingOverlay(UserModsSelectOverlay);
+
+            Room.PropertyChanged += onRoomPropertyChanged;
+            updateSetupState();
         }
 
-        protected override IReadOnlyDependencyContainer CreateChildDependencies(IReadOnlyDependencyContainer parent)
+        private void onRoomPropertyChanged(object? sender, PropertyChangedEventArgs e)
         {
-            return new CachedModelDependencyContainer<Room>(base.CreateChildDependencies(parent))
-            {
-                Model = { Value = Room }
-            };
+            if (e.PropertyName == nameof(Room.RoomID))
+                updateSetupState();
         }
+
+        private void updateSetupState()
+        {
+            if (Room.RoomID == null)
+            {
+                // A new room is being created.
+                // The main content should be hidden until the settings overlay is hidden, signaling the room is ready to be displayed.
+                mainContent.Hide();
+                settingsOverlay.Show();
+            }
+            else
+            {
+                mainContent.Show();
+                settingsOverlay.Hide();
+            }
+        }
+
+        protected virtual bool IsConnected => API.State.Value == APIState.Online;
 
         public override bool OnBackButton()
         {
-            if (Room.RoomID.Value == null)
+            if (Room.RoomID == null)
             {
-                // room has not been created yet; exit immediately.
+                if (!ensureExitConfirmed())
+                    return true;
+
                 settingsOverlay.Hide();
                 return base.OnBackButton();
             }
 
-            if (userModsSelectOverlay.State.Value == Visibility.Visible)
+            if (UserModsSelectOverlay.State.Value == Visibility.Visible)
             {
-                userModsSelectOverlay.Hide();
+                UserModsSelectOverlay.Hide();
                 return true;
             }
 
@@ -282,41 +316,82 @@ namespace osu.Game.Screens.OnlinePlay.Match
             return base.OnBackButton();
         }
 
-        protected void ShowUserModSelect() => userModsSelectOverlay.Show();
+        protected void ShowUserModSelect() => UserModsSelectOverlay.Show();
 
-        public override void OnEntering(IScreen last)
+        public override void OnEntering(ScreenTransitionEvent e)
         {
-            base.OnEntering(last);
+            base.OnEntering(e);
             beginHandlingTrack();
         }
 
-        public override void OnSuspending(IScreen next)
+        public override void OnSuspending(ScreenTransitionEvent e)
         {
-            endHandlingTrack();
-            base.OnSuspending(next);
+            // Should be a noop in most cases, but let's ensure beyond doubt that the beatmap is in a correct state.
+            updateWorkingBeatmap();
+
+            onLeaving();
+            base.OnSuspending(e);
         }
 
-        public override void OnResuming(IScreen last)
+        public override void OnResuming(ScreenTransitionEvent e)
         {
-            base.OnResuming(last);
+            base.OnResuming(e);
             updateWorkingBeatmap();
             beginHandlingTrack();
             Scheduler.AddOnce(UpdateMods);
             Scheduler.AddOnce(updateRuleset);
         }
 
-        public override bool OnExiting(IScreen next)
+        protected bool ExitConfirmed { get; private set; }
+
+        public override bool OnExiting(ScreenExitEvent e)
         {
+            if (!ensureExitConfirmed())
+                return true;
+
             RoomManager?.PartRoom();
             Mods.Value = Array.Empty<Mod>();
 
-            endHandlingTrack();
+            onLeaving();
 
-            return base.OnExiting(next);
+            return base.OnExiting(e);
+        }
+
+        private bool ensureExitConfirmed()
+        {
+            if (ExitConfirmed)
+                return true;
+
+            if (!IsConnected)
+                return true;
+
+            bool hasUnsavedChanges = Room.RoomID == null && Room.Playlist.Count > 0;
+
+            if (DialogOverlay == null || !hasUnsavedChanges)
+                return true;
+
+            // if the dialog is already displayed, block exiting until the user explicitly makes a decision.
+            if (DialogOverlay.CurrentDialog is ConfirmDiscardChangesDialog discardChangesDialog)
+            {
+                discardChangesDialog.Flash();
+                return false;
+            }
+
+            DialogOverlay.Push(new ConfirmDiscardChangesDialog(() =>
+            {
+                ExitConfirmed = true;
+                settingsOverlay.Hide();
+                this.Exit();
+            }));
+
+            return false;
         }
 
         protected void StartPlay()
         {
+            if (SelectedItem.Value == null)
+                return;
+
             // User may be at song select or otherwise when the host starts gameplay.
             // Ensure that they first return to this screen, else global bindables (beatmap etc.) may be in a bad state.
             if (!this.IsCurrentScreen())
@@ -330,30 +405,31 @@ namespace osu.Game.Screens.OnlinePlay.Match
             sampleStart?.Play();
 
             // fallback is to allow this class to operate when there is no parent OnlineScreen (testing purposes).
-            var targetScreen = (Screen)ParentScreen ?? this;
+            var targetScreen = (Screen?)ParentScreen ?? this;
 
-            targetScreen.Push(CreateGameplayScreen());
+            targetScreen.Push(CreateGameplayScreen(SelectedItem.Value));
         }
 
         /// <summary>
         /// Creates the gameplay screen to be entered.
         /// </summary>
+        /// <param name="selectedItem">The playlist item about to be played.</param>
         /// <returns>The screen to enter.</returns>
-        protected abstract Screen CreateGameplayScreen();
+        protected abstract Screen CreateGameplayScreen(PlaylistItem selectedItem);
 
         private void selectedItemChanged()
         {
             updateWorkingBeatmap();
 
-            var selected = SelectedItem.Value;
-
-            if (selected == null)
+            if (SelectedItem.Value is not PlaylistItem selected)
                 return;
 
+            var rulesetInstance = Rulesets.GetRuleset(selected.RulesetID)?.CreateInstance();
+            Debug.Assert(rulesetInstance != null);
+            var allowedMods = selected.AllowedMods.Select(m => m.ToMod(rulesetInstance));
+
             // Remove any user mods that are no longer allowed.
-            UserMods.Value = UserMods.Value
-                                     .Where(m => selected.AllowedMods.Any(a => m.GetType() == a.GetType()))
-                                     .ToList();
+            UserMods.Value = UserMods.Value.Where(m => allowedMods.Any(a => m.GetType() == a.GetType())).ToList();
 
             UpdateMods();
             updateRuleset();
@@ -361,24 +437,27 @@ namespace osu.Game.Screens.OnlinePlay.Match
             if (!selected.AllowedMods.Any())
             {
                 UserModsSection?.Hide();
-                userModsSelectOverlay.Hide();
-                userModsSelectOverlay.IsValidMod = _ => false;
+                UserModsSelectOverlay.Hide();
+                UserModsSelectOverlay.IsValidMod = _ => false;
             }
             else
             {
                 UserModsSection?.Show();
-                userModsSelectOverlay.IsValidMod = m => selected.AllowedMods.Any(a => a.GetType() == m.GetType());
+                UserModsSelectOverlay.IsValidMod = m => allowedMods.Any(a => a.GetType() == m.GetType());
             }
         }
 
         private void updateWorkingBeatmap()
         {
-            var beatmap = SelectedItem.Value?.Beatmap.Value;
+            if (SelectedItem.Value == null || !this.IsCurrentScreen())
+                return;
+
+            var beatmap = SelectedItem.Value?.Beatmap;
 
             // Retrieve the corresponding local beatmap, since we can't directly use the playlist's beatmap info
             var localBeatmap = beatmap == null ? null : beatmapManager.QueryBeatmap(b => b.OnlineID == beatmap.OnlineID);
 
-            Beatmap.Value = beatmapManager.GetWorkingBeatmap(localBeatmap);
+            UserModsSelectOverlay.Beatmap.Value = Beatmap.Value = beatmapManager.GetWorkingBeatmap(localBeatmap);
         }
 
         protected virtual void UpdateMods()
@@ -386,7 +465,9 @@ namespace osu.Game.Screens.OnlinePlay.Match
             if (SelectedItem.Value == null || !this.IsCurrentScreen())
                 return;
 
-            Mods.Value = UserMods.Value.Concat(SelectedItem.Value.RequiredMods).ToList();
+            var rulesetInstance = Rulesets.GetRuleset(SelectedItem.Value.RulesetID)?.CreateInstance();
+            Debug.Assert(rulesetInstance != null);
+            Mods.Value = UserMods.Value.Concat(SelectedItem.Value.RequiredMods.Select(m => m.ToMod(rulesetInstance))).ToList();
         }
 
         private void updateRuleset()
@@ -394,12 +475,20 @@ namespace osu.Game.Screens.OnlinePlay.Match
             if (SelectedItem.Value == null || !this.IsCurrentScreen())
                 return;
 
-            Ruleset.Value = rulesets.GetRuleset(SelectedItem.Value.RulesetID);
+            Ruleset.Value = Rulesets.GetRuleset(SelectedItem.Value.RulesetID);
         }
 
         private void beginHandlingTrack()
         {
             Beatmap.BindValueChanged(applyLoopingToTrack, true);
+        }
+
+        private void onLeaving()
+        {
+            UserModsSelectOverlay.Hide();
+            endHandlingTrack();
+
+            previewTrackManager.StopAnyPlaying(this);
         }
 
         private void endHandlingTrack()
@@ -408,7 +497,7 @@ namespace osu.Game.Screens.OnlinePlay.Match
             cancelTrackLooping();
         }
 
-        private void applyLoopingToTrack(ValueChangedEvent<WorkingBeatmap> _ = null)
+        private void applyLoopingToTrack(ValueChangedEvent<WorkingBeatmap>? _ = null)
         {
             if (!this.IsCurrentScreen())
                 return;
@@ -417,14 +506,14 @@ namespace osu.Game.Screens.OnlinePlay.Match
 
             if (track != null)
             {
-                Beatmap.Value.PrepareTrackForPreviewLooping();
-                music?.EnsurePlayingSomething();
+                Beatmap.Value!.PrepareTrackForPreview(true);
+                music.EnsurePlayingSomething();
             }
         }
 
         private void cancelTrackLooping()
         {
-            var track = Beatmap?.Value?.Track;
+            var track = Beatmap.Value?.Track;
 
             if (track != null)
                 track.Looping = false;
@@ -446,8 +535,12 @@ namespace osu.Game.Screens.OnlinePlay.Match
         /// <param name="room">The room to change the settings of.</param>
         protected abstract RoomSettingsOverlay CreateRoomSettingsOverlay(Room room);
 
-        public class UserModSelectButton : PurpleTriangleButton
+        protected override void Dispose(bool isDisposing)
         {
+            base.Dispose(isDisposing);
+
+            userModsSelectOverlayRegistration?.Dispose();
+            Room.PropertyChanged -= onRoomPropertyChanged;
         }
     }
 }

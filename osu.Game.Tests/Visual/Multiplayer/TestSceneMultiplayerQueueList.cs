@@ -12,7 +12,6 @@ using osu.Framework.Graphics.Containers;
 using osu.Framework.Platform;
 using osu.Framework.Testing;
 using osu.Game.Beatmaps;
-using osu.Game.Database;
 using osu.Game.Online.API.Requests.Responses;
 using osu.Game.Online.Multiplayer;
 using osu.Game.Online.Rooms;
@@ -24,22 +23,18 @@ using osuTK;
 
 namespace osu.Game.Tests.Visual.Multiplayer
 {
-    public class TestSceneMultiplayerQueueList : MultiplayerTestScene
+    public partial class TestSceneMultiplayerQueueList : MultiplayerTestScene
     {
-        [Cached(typeof(UserLookupCache))]
-        private readonly TestUserLookupCache userLookupCache = new TestUserLookupCache();
-
-        private MultiplayerQueueList playlist;
-        private BeatmapManager beatmaps;
-        private RulesetStore rulesets;
-        private BeatmapSetInfo importedSet;
-        private BeatmapInfo importedBeatmap;
+        private MultiplayerQueueList playlist = null!;
+        private BeatmapManager beatmaps = null!;
+        private BeatmapSetInfo importedSet = null!;
+        private BeatmapInfo importedBeatmap = null!;
 
         [BackgroundDependencyLoader]
         private void load(GameHost host, AudioManager audio)
         {
-            Dependencies.Cache(rulesets = new RulesetStore(Realm));
-            Dependencies.Cache(beatmaps = new BeatmapManager(LocalStorage, Realm, rulesets, API, audio, Resources, host, Beatmap.Default));
+            Dependencies.Cache(new RealmRulesetStore(Realm));
+            Dependencies.Cache(beatmaps = new BeatmapManager(LocalStorage, Realm, API, audio, Resources, host, Beatmap.Default));
             Dependencies.Cache(Realm);
         }
 
@@ -49,12 +44,17 @@ namespace osu.Game.Tests.Visual.Multiplayer
 
             AddStep("create playlist", () =>
             {
-                Child = playlist = new MultiplayerQueueList
+                Child = playlist = new MultiplayerQueueList(SelectedRoom.Value!)
                 {
                     Anchor = Anchor.Centre,
                     Origin = Anchor.Centre,
                     Size = new Vector2(500, 300),
-                    Items = { BindTarget = Client.APIRoom!.Playlist }
+                };
+
+                MultiplayerClient.ClientAPIRoom!.PropertyChanged += (_, e) =>
+                {
+                    if (e.PropertyName == nameof(Room.Playlist))
+                        playlist.Items.ReplaceRange(0, playlist.Items.Count, MultiplayerClient.ClientAPIRoom.Playlist);
                 };
             });
 
@@ -65,14 +65,14 @@ namespace osu.Game.Tests.Visual.Multiplayer
                 importedBeatmap = importedSet.Beatmaps.First(b => b.Ruleset.OnlineID == 0);
             });
 
-            AddStep("change to all players mode", () => Client.ChangeSettings(new MultiplayerRoomSettings { QueueMode = QueueMode.AllPlayers }));
+            AddStep("change to all players mode", () => MultiplayerClient.ChangeSettings(new MultiplayerRoomSettings { QueueMode = QueueMode.AllPlayers }).WaitSafely());
         }
 
         [Test]
         public void TestDeleteButtonAlwaysVisibleForHost()
         {
-            AddStep("set all players queue mode", () => Client.ChangeSettings(new MultiplayerRoomSettings { QueueMode = QueueMode.AllPlayers }));
-            AddUntilStep("wait for queue mode change", () => Client.APIRoom?.QueueMode.Value == QueueMode.AllPlayers);
+            AddStep("set all players queue mode", () => MultiplayerClient.ChangeSettings(new MultiplayerRoomSettings { QueueMode = QueueMode.AllPlayers }).WaitSafely());
+            AddUntilStep("wait for queue mode change", () => MultiplayerClient.ClientAPIRoom?.QueueMode == QueueMode.AllPlayers);
 
             addPlaylistItem(() => API.LocalUser.Value.OnlineID);
             assertDeleteButtonVisibility(1, true);
@@ -83,35 +83,44 @@ namespace osu.Game.Tests.Visual.Multiplayer
         [Test]
         public void TestDeleteButtonOnlyVisibleForItemOwnerIfNotHost()
         {
-            AddStep("set all players queue mode", () => Client.ChangeSettings(new MultiplayerRoomSettings { QueueMode = QueueMode.AllPlayers }));
-            AddUntilStep("wait for queue mode change", () => Client.APIRoom?.QueueMode.Value == QueueMode.AllPlayers);
+            AddStep("set all players queue mode", () => MultiplayerClient.ChangeSettings(new MultiplayerRoomSettings { QueueMode = QueueMode.AllPlayers }).WaitSafely());
+            AddUntilStep("wait for queue mode change", () => MultiplayerClient.ClientAPIRoom?.QueueMode == QueueMode.AllPlayers);
 
-            AddStep("join other user", () => Client.AddUser(new APIUser { Id = 1234 }));
-            AddStep("set other user as host", () => Client.TransferHost(1234));
+            AddStep("join other user", () => MultiplayerClient.AddUser(new APIUser { Id = 1234 }));
+            AddStep("set other user as host", () => MultiplayerClient.TransferHost(1234));
 
             addPlaylistItem(() => API.LocalUser.Value.OnlineID);
             assertDeleteButtonVisibility(1, true);
             addPlaylistItem(() => 1234);
             assertDeleteButtonVisibility(2, false);
 
-            AddStep("set local user as host", () => Client.TransferHost(API.LocalUser.Value.OnlineID));
+            AddStep("set local user as host", () => MultiplayerClient.TransferHost(API.LocalUser.Value.OnlineID));
             assertDeleteButtonVisibility(1, true);
             assertDeleteButtonVisibility(2, true);
         }
 
         [Test]
-        public void TestCurrentItemDoesNotHaveDeleteButton()
+        public void TestSingleItemDoesNotHaveDeleteButton()
         {
-            AddStep("set all players queue mode", () => Client.ChangeSettings(new MultiplayerRoomSettings { QueueMode = QueueMode.AllPlayers }));
-            AddUntilStep("wait for queue mode change", () => Client.APIRoom?.QueueMode.Value == QueueMode.AllPlayers);
+            AddStep("set all players queue mode", () => MultiplayerClient.ChangeSettings(new MultiplayerRoomSettings { QueueMode = QueueMode.AllPlayers }).WaitSafely());
+            AddUntilStep("wait for queue mode change", () => MultiplayerClient.ClientAPIRoom?.QueueMode == QueueMode.AllPlayers);
+
+            assertDeleteButtonVisibility(0, false);
+        }
+
+        [Test]
+        public void TestCurrentItemHasDeleteButtonIfNotSingle()
+        {
+            AddStep("set all players queue mode", () => MultiplayerClient.ChangeSettings(new MultiplayerRoomSettings { QueueMode = QueueMode.AllPlayers }).WaitSafely());
+            AddUntilStep("wait for queue mode change", () => MultiplayerClient.ClientAPIRoom?.QueueMode == QueueMode.AllPlayers);
 
             addPlaylistItem(() => API.LocalUser.Value.OnlineID);
 
-            assertDeleteButtonVisibility(0, false);
+            assertDeleteButtonVisibility(0, true);
             assertDeleteButtonVisibility(1, true);
 
-            AddStep("finish current item", () => Client.FinishCurrentItem());
-            AddUntilStep("wait for next item to be selected", () => Client.Room?.Settings.PlaylistItemId == 2);
+            AddStep("finish current item", () => MultiplayerClient.FinishCurrentItem().WaitSafely());
+            AddUntilStep("wait for next item to be selected", () => MultiplayerClient.ClientRoom?.Settings.PlaylistItemId == 2);
             AddUntilStep("wait for two items in playlist", () => playlist.ChildrenOfType<DrawableRoomPlaylistItem>().Count() == 2);
 
             assertDeleteButtonVisibility(0, false);
@@ -124,13 +133,9 @@ namespace osu.Game.Tests.Visual.Multiplayer
 
             AddStep("add playlist item", () =>
             {
-                MultiplayerPlaylistItem item = new MultiplayerPlaylistItem(new PlaylistItem
-                {
-                    Beatmap = { Value = importedBeatmap },
-                    BeatmapID = importedBeatmap.OnlineID,
-                });
+                MultiplayerPlaylistItem item = TestMultiplayerClient.CreateMultiplayerPlaylistItem(new PlaylistItem(importedBeatmap));
 
-                Client.AddUserPlaylistItem(userId(), item);
+                MultiplayerClient.AddUserPlaylistItem(userId(), item).WaitSafely();
 
                 itemId = item.ID;
             });

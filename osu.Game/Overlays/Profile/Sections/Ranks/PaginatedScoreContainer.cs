@@ -15,16 +15,14 @@ using APIUser = osu.Game.Online.API.Requests.Responses.APIUser;
 
 namespace osu.Game.Overlays.Profile.Sections.Ranks
 {
-    public class PaginatedScoreContainer : PaginatedProfileSubsection<APIScore>
+    public partial class PaginatedScoreContainer : PaginatedProfileSubsection<SoloScoreInfo>
     {
         private readonly ScoreType type;
 
-        public PaginatedScoreContainer(ScoreType type, Bindable<APIUser> user, LocalisableString headerText)
+        public PaginatedScoreContainer(ScoreType type, Bindable<UserProfileData?> user, LocalisableString headerText)
             : base(user, headerText)
         {
             this.type = type;
-
-            ItemsPerPage = 5;
         }
 
         [BackgroundDependencyLoader]
@@ -46,25 +44,28 @@ namespace osu.Game.Overlays.Profile.Sections.Ranks
                 case ScoreType.Recent:
                     return user.ScoresRecentCount;
 
+                case ScoreType.Pinned:
+                    return user.ScoresPinnedCount;
+
                 default:
                     return 0;
             }
         }
 
-        protected override void OnItemsReceived(List<APIScore> items)
+        protected override void OnItemsReceived(List<SoloScoreInfo> items)
         {
-            if (VisiblePages == 0)
+            if (CurrentPage == null || CurrentPage?.Offset == 0)
                 drawableItemIndex = 0;
 
             base.OnItemsReceived(items);
         }
 
-        protected override APIRequest<List<APIScore>> CreateRequest() =>
-            new GetUserScoresRequest(User.Value.Id, type, VisiblePages++, ItemsPerPage);
+        protected override APIRequest<List<SoloScoreInfo>> CreateRequest(UserProfileData user, PaginationParameters pagination) =>
+            new GetUserScoresRequest(user.User.Id, type, pagination, user.Ruleset);
 
         private int drawableItemIndex;
 
-        protected override Drawable CreateDrawableItem(APIScore model)
+        protected override Drawable CreateDrawableItem(SoloScoreInfo model)
         {
             switch (type)
             {

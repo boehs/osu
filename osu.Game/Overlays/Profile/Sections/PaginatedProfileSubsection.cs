@@ -14,29 +14,39 @@ using osu.Game.Graphics.Sprites;
 using osu.Game.Graphics.UserInterface;
 using osu.Game.Online.API;
 using osu.Game.Graphics.Containers;
+using osu.Game.Online.API.Requests;
 using osu.Game.Online.API.Requests.Responses;
 using osuTK;
 
 namespace osu.Game.Overlays.Profile.Sections
 {
-    public abstract class PaginatedProfileSubsection<TModel> : ProfileSubsection
+    public abstract partial class PaginatedProfileSubsection<TModel> : ProfileSubsection
     {
+        /// <summary>
+        /// The number of items displayed per page.
+        /// </summary>
+        protected virtual int ItemsPerPage => 50;
+
+        /// <summary>
+        /// The number of items displayed initially.
+        /// </summary>
+        protected virtual int InitialItemsCount => 5;
+
         [Resolved]
-        private IAPIProvider api { get; set; }
+        private IAPIProvider api { get; set; } = null!;
 
-        protected int VisiblePages;
-        protected int ItemsPerPage;
+        protected PaginationParameters? CurrentPage { get; private set; }
 
-        protected ReverseChildIDFillFlowContainer<Drawable> ItemsContainer { get; private set; }
+        protected ReverseChildIDFillFlowContainer<Drawable> ItemsContainer { get; private set; } = null!;
 
-        private APIRequest<List<TModel>> retrievalRequest;
-        private CancellationTokenSource loadCancellation;
+        private APIRequest<List<TModel>>? retrievalRequest;
+        private CancellationTokenSource? loadCancellation;
 
-        private ShowMoreButton moreButton;
-        private OsuSpriteText missing;
+        private ShowMoreButton moreButton = null!;
+        private OsuSpriteText missing = null!;
         private readonly LocalisableString? missingText;
 
-        protected PaginatedProfileSubsection(Bindable<APIUser> user, LocalisableString? headerText = null, LocalisableString? missingText = null)
+        protected PaginatedProfileSubsection(Bindable<UserProfileData?> user, LocalisableString? headerText = null, LocalisableString? missingText = null)
             : base(user, headerText, CounterVisibilityState.AlwaysVisible)
         {
             this.missingText = missingText;
@@ -82,36 +92,41 @@ namespace osu.Game.Overlays.Profile.Sections
             User.BindValueChanged(onUserChanged, true);
         }
 
-        private void onUserChanged(ValueChangedEvent<APIUser> e)
+        private void onUserChanged(ValueChangedEvent<UserProfileData?> e)
         {
             loadCancellation?.Cancel();
             retrievalRequest?.Cancel();
 
-            VisiblePages = 0;
+            CurrentPage = null;
             ItemsContainer.Clear();
 
-            if (e.NewValue != null)
+            if (e.NewValue?.User != null)
             {
                 showMore();
-                SetCount(GetCount(e.NewValue));
+                SetCount(GetCount(e.NewValue.User));
             }
         }
 
         private void showMore()
         {
+            if (User.Value == null)
+                return;
+
             loadCancellation = new CancellationTokenSource();
 
-            retrievalRequest = CreateRequest();
-            retrievalRequest.Success += UpdateItems;
+            CurrentPage = CurrentPage?.TakeNext(ItemsPerPage) ?? new PaginationParameters(InitialItemsCount);
+
+            retrievalRequest = CreateRequest(User.Value, CurrentPage.Value);
+            retrievalRequest.Success += items => UpdateItems(items, loadCancellation);
 
             api.Queue(retrievalRequest);
         }
 
-        protected virtual void UpdateItems(List<TModel> items) => Schedule(() =>
+        protected virtual void UpdateItems(List<TModel> items, CancellationTokenSource cancellationTokenSource) => Schedule(() =>
         {
             OnItemsReceived(items);
 
-            if (!items.Any() && VisiblePages == 1)
+            if (!items.Any() && CurrentPage?.Offset == 0)
             {
                 moreButton.Hide();
                 moreButton.IsLoading = false;
@@ -122,14 +137,15 @@ namespace osu.Game.Overlays.Profile.Sections
                 return;
             }
 
-            LoadComponentsAsync(items.Select(CreateDrawableItem).Where(d => d != null), drawables =>
+            LoadComponentsAsync(items.Select(CreateDrawableItem).Where(d => d != null).Cast<Drawable>(), drawables =>
             {
                 missing.Hide();
-                moreButton.FadeTo(items.Count == ItemsPerPage ? 1 : 0);
+
+                moreButton.FadeTo(items.Count == CurrentPage?.Limit ? 1 : 0);
                 moreButton.IsLoading = false;
 
                 ItemsContainer.AddRange(drawables);
-            }, loadCancellation.Token);
+            }, cancellationTokenSource.Token);
         });
 
         protected virtual int GetCount(APIUser user) => 0;
@@ -138,9 +154,9 @@ namespace osu.Game.Overlays.Profile.Sections
         {
         }
 
-        protected abstract APIRequest<List<TModel>> CreateRequest();
+        protected abstract APIRequest<List<TModel>> CreateRequest(UserProfileData user, PaginationParameters pagination);
 
-        protected abstract Drawable CreateDrawableItem(TModel model);
+        protected abstract Drawable? CreateDrawableItem(TModel model);
 
         protected override void Dispose(bool isDisposing)
         {

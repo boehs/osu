@@ -13,53 +13,44 @@ namespace osu.Game.Tests.Visual.OnlinePlay
     /// <summary>
     /// A very simple <see cref="RoomManager"/> for use in online play test scenes.
     /// </summary>
-    public class TestRoomManager : RoomManager
+    public partial class TestRoomManager : RoomManager
     {
-        public Action<Room, string> JoinRoomRequested;
+        public Action<Room, string?>? JoinRoomRequested;
 
         private int currentRoomId;
 
-        public override void JoinRoom(Room room, string password = null, Action<Room> onSuccess = null, Action<string> onError = null)
+        public override void JoinRoom(Room room, string? password = null, Action<Room>? onSuccess = null, Action<string>? onError = null)
         {
             JoinRoomRequested?.Invoke(room, password);
             base.JoinRoom(room, password, onSuccess, onError);
         }
 
-        public void AddRooms(int count, RulesetInfo ruleset = null, bool withPassword = false)
+        public void AddRooms(int count, RulesetInfo? ruleset = null, bool withPassword = false, bool withSpotlightRooms = false)
         {
             for (int i = 0; i < count; i++)
             {
-                var room = new Room
+                AddRoom(new Room
                 {
-                    RoomID = { Value = -currentRoomId },
-                    Name = { Value = $@"Room {currentRoomId}" },
-                    Host = { Value = new APIUser { Username = @"Host" } },
-                    EndDate = { Value = DateTimeOffset.Now + TimeSpan.FromSeconds(10) },
-                    Category = { Value = i % 2 == 0 ? RoomCategory.Spotlight : RoomCategory.Normal },
-                };
-
-                if (withPassword)
-                    room.Password.Value = @"password";
-
-                if (ruleset != null)
-                {
-                    room.Playlist.Add(new PlaylistItem
-                    {
-                        Ruleset = { Value = ruleset },
-                        Beatmap =
-                        {
-                            Value = new BeatmapInfo
-                            {
-                                Metadata = new BeatmapMetadata()
-                            }
-                        }
-                    });
-                }
-
-                CreateRoom(room);
-
-                currentRoomId++;
+                    Name = $@"Room {currentRoomId}",
+                    Host = new APIUser { Username = @"Host" },
+                    Duration = TimeSpan.FromSeconds(10),
+                    Category = withSpotlightRooms && i % 2 == 0 ? RoomCategory.Spotlight : RoomCategory.Normal,
+                    Password = withPassword ? @"password" : null,
+                    PlaylistItemStats = ruleset == null
+                        ? null
+                        : new Room.RoomPlaylistItemStats { RulesetIDs = [ruleset.OnlineID] },
+                    Playlist = ruleset == null
+                        ? Array.Empty<PlaylistItem>()
+                        : [new PlaylistItem(new BeatmapInfo { Metadata = new BeatmapMetadata() }) { RulesetID = ruleset.OnlineID }]
+                });
             }
+        }
+
+        public void AddRoom(Room room)
+        {
+            room.RoomID = -currentRoomId;
+            CreateRoom(room);
+            currentRoomId++;
         }
     }
 }

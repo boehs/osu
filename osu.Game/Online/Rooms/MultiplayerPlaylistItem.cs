@@ -1,8 +1,6 @@
 // Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
-#nullable enable
-
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -55,22 +53,18 @@ namespace osu.Game.Online.Rooms
         [Key(9)]
         public DateTimeOffset? PlayedAt { get; set; }
 
+        [Key(10)]
+        public double StarRating { get; set; }
+
+        /// <summary>
+        /// Indicates whether participants in the room are able to pick their own choice of beatmap difficulty and ruleset.
+        /// </summary>
+        [Key(11)]
+        public bool Freestyle { get; set; }
+
+        [SerializationConstructor]
         public MultiplayerPlaylistItem()
         {
-        }
-
-        public MultiplayerPlaylistItem(PlaylistItem item)
-        {
-            ID = item.ID;
-            OwnerID = item.OwnerID;
-            BeatmapID = item.BeatmapID;
-            BeatmapChecksum = item.Beatmap.Value?.MD5Hash ?? string.Empty;
-            RulesetID = item.RulesetID;
-            RequiredMods = item.RequiredMods.Select(m => new APIMod(m)).ToArray();
-            AllowedMods = item.AllowedMods.Select(m => new APIMod(m)).ToArray();
-            Expired = item.Expired;
-            PlaylistOrder = item.PlaylistOrder ?? 0;
-            PlayedAt = item.PlayedAt;
         }
     }
 }

@@ -3,15 +3,14 @@
 
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
-using osu.Framework.Bindables;
+using osu.Framework.Extensions.LocalisationExtensions;
+using osu.Framework.Localisation;
 using osu.Game.Online.API;
+using osu.Game.Online.Rooms;
 using osu.Game.Rulesets;
 using osu.Game.Rulesets.Mods;
-
-#nullable enable
 
 namespace osu.Game.Utils
 {
@@ -108,20 +107,69 @@ namespace osu.Game.Utils
         }
 
         /// <summary>
-        /// Check the provided combination of mods are valid for a local gameplay session.
+        /// Checks that all <see cref="Mod"/>s in a combination are valid for a local gameplay session.
         /// </summary>
         /// <param name="mods">The mods to check.</param>
-        /// <param name="invalidMods">Invalid mods, if any were found. Can be null if all mods were valid.</param>
+        /// <param name="invalidMods">Invalid mods, if any were found. Will be null if all mods were valid.</param>
         /// <returns>Whether the input mods were all valid. If false, <paramref name="invalidMods"/> will contain all invalid entries.</returns>
         public static bool CheckValidForGameplay(IEnumerable<Mod> mods, [NotNullWhen(false)] out List<Mod>? invalidMods)
         {
             mods = mods.ToArray();
 
-            CheckCompatibleSet(mods, out invalidMods);
+            // checking compatibility of multi mods would try to flatten them and return incompatible mods.
+            // in gameplay context, we never want MultiMod selected in the first place, therefore check against it first.
+            if (!checkValid(mods, m => !(m is MultiMod), out invalidMods))
+                return false;
+
+            if (!CheckCompatibleSet(mods, out invalidMods))
+                return false;
+
+            return checkValid(mods, m => m.HasImplementation, out invalidMods);
+        }
+
+        /// <summary>
+        /// Checks that all <see cref="Mod"/>s in a combination are valid as "required mods" in a multiplayer match session.
+        /// </summary>
+        /// <param name="mods">The mods to check.</param>
+        /// <param name="invalidMods">Invalid mods, if any were found. Will be null if all mods were valid.</param>
+        /// <returns>Whether the input mods were all valid. If false, <paramref name="invalidMods"/> will contain all invalid entries.</returns>
+        public static bool CheckValidRequiredModsForMultiplayer(IEnumerable<Mod> mods, [NotNullWhen(false)] out List<Mod>? invalidMods)
+        {
+            mods = mods.ToArray();
+
+            // checking compatibility of multi mods would try to flatten them and return incompatible mods.
+            // in gameplay context, we never want MultiMod selected in the first place, therefore check against it first.
+            if (!checkValid(mods, m => !(m is MultiMod), out invalidMods))
+                return false;
+
+            if (!CheckCompatibleSet(mods, out invalidMods))
+                return false;
+
+            return checkValid(mods, m => m.Type != ModType.System && m.HasImplementation && m.ValidForMultiplayer, out invalidMods);
+        }
+
+        /// <summary>
+        /// Checks that all <see cref="Mod"/>s in a combination are valid as "free mods" in a multiplayer match session.
+        /// </summary>
+        /// <remarks>
+        /// Note that this does not check compatibility between mods,
+        /// given that the passed mods are expected to be the ones to be allowed for the multiplayer match,
+        /// not to be confused with the list of mods the user currently has selected for the multiplayer match.
+        /// </remarks>
+        /// <param name="mods">The mods to check.</param>
+        /// <param name="invalidMods">Invalid mods, if any were found. Will be null if all mods were valid.</param>
+        /// <returns>Whether the input mods were all valid. If false, <paramref name="invalidMods"/> will contain all invalid entries.</returns>
+        public static bool CheckValidFreeModsForMultiplayer(IEnumerable<Mod> mods, [NotNullWhen(false)] out List<Mod>? invalidMods)
+            => checkValid(mods, m => m.Type != ModType.System && m.HasImplementation && m.ValidForMultiplayerAsFreeMod && !(m is MultiMod), out invalidMods);
+
+        private static bool checkValid(IEnumerable<Mod> mods, Predicate<Mod> valid, [NotNullWhen(false)] out List<Mod>? invalidMods)
+        {
+            mods = mods.ToArray();
+            invalidMods = null;
 
             foreach (var mod in mods)
             {
-                if (mod.Type == ModType.System || !mod.HasImplementation || mod is MultiMod)
+                if (!valid(mod))
                 {
                     invalidMods ??= new List<Mod>();
                     invalidMods.Add(mod);
@@ -155,39 +203,6 @@ namespace osu.Game.Utils
         }
 
         /// <summary>
-        /// Returns the underlying value of the given mod setting object.
-        /// Used in <see cref="APIMod"/> for serialization and equality comparison purposes.
-        /// </summary>
-        /// <param name="setting">The mod setting.</param>
-        public static object GetSettingUnderlyingValue(object setting)
-        {
-            switch (setting)
-            {
-                case Bindable<double> d:
-                    return d.Value;
-
-                case Bindable<int> i:
-                    return i.Value;
-
-                case Bindable<float> f:
-                    return f.Value;
-
-                case Bindable<bool> b:
-                    return b.Value;
-
-                case IBindable u:
-                    // A mod with unknown (e.g. enum) generic type.
-                    var valueMethod = u.GetType().GetProperty(nameof(IBindable<int>.Value));
-                    Debug.Assert(valueMethod != null);
-                    return valueMethod.GetValue(u);
-
-                default:
-                    // fall back for non-bindable cases.
-                    return setting;
-            }
-        }
-
-        /// <summary>
         /// Verifies all proposed mods are valid for a given ruleset and returns instantiated <see cref="Mod"/>s for further processing.
         /// </summary>
         /// <param name="ruleset">The ruleset to verify mods against.</param>
@@ -201,18 +216,122 @@ namespace osu.Game.Utils
 
             foreach (var apiMod in proposedMods)
             {
-                try
-                {
-                    // will throw if invalid
-                    valid.Add(apiMod.ToMod(ruleset));
-                }
-                catch
+                var mod = apiMod.ToMod(ruleset);
+
+                if (mod is UnknownMod)
                 {
                     proposedWereValid = false;
+                    continue;
                 }
+
+                valid.Add(mod);
             }
 
             return proposedWereValid;
+        }
+
+        /// <summary>
+        /// Verifies all mods provided belong to the given ruleset.
+        /// </summary>
+        /// <param name="ruleset">The ruleset to check the proposed mods against.</param>
+        /// <param name="proposedMods">The mods proposed for checking.</param>
+        /// <returns>Whether all <paramref name="proposedMods"/> belong to the given <paramref name="ruleset"/>.</returns>
+        public static bool CheckModsBelongToRuleset(Ruleset ruleset, IEnumerable<Mod> proposedMods)
+        {
+            var rulesetModsTypes = ruleset.AllMods.Select(m => m.GetType()).ToList();
+
+            foreach (var proposedMod in proposedMods)
+            {
+                bool found = false;
+
+                var proposedModType = proposedMod.GetType();
+
+                foreach (var rulesetModType in rulesetModsTypes)
+                {
+                    if (rulesetModType.IsAssignableFrom(proposedModType))
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (!found)
+                    return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Given a value of a score multiplier, returns a string version with special handling for a value near 1.00x.
+        /// </summary>
+        /// <param name="scoreMultiplier">The value of the score multiplier.</param>
+        /// <returns>A formatted score multiplier with a trailing "x" symbol</returns>
+        public static LocalisableString FormatScoreMultiplier(double scoreMultiplier)
+        {
+            // Round multiplier values away from 1.00x to two significant digits.
+            if (scoreMultiplier > 1)
+                scoreMultiplier = Math.Ceiling(Math.Round(scoreMultiplier * 100, 12)) / 100;
+            else
+                scoreMultiplier = Math.Floor(Math.Round(scoreMultiplier * 100, 12)) / 100;
+
+            return scoreMultiplier.ToLocalisableString("0.00x");
+        }
+
+        /// <summary>
+        /// Calculate the rate for the song with the selected mods.
+        /// </summary>
+        /// <param name="mods">The list of selected mods.</param>
+        /// <returns>The rate with mods.</returns>
+        public static double CalculateRateWithMods(IEnumerable<Mod> mods)
+        {
+            double rate = 1;
+
+            // TODO: This doesn't consider mods which apply variable rates, yet.
+            foreach (var mod in mods.OfType<IApplicableToRate>())
+                rate = mod.ApplyToRate(0, rate);
+
+            return rate;
+        }
+
+        /// <summary>
+        /// Determines whether a mod can be applied to playlist items in the given match type.
+        /// </summary>
+        /// <param name="mod">The mod to test.</param>
+        /// <param name="type">The match type.</param>
+        public static bool IsValidModForMatchType(Mod mod, MatchType type)
+        {
+            if (mod.Type == ModType.System || !mod.UserPlayable || !mod.HasImplementation)
+                return false;
+
+            switch (type)
+            {
+                case MatchType.Playlists:
+                    return true;
+
+                default:
+                    return mod.ValidForMultiplayer;
+            }
+        }
+
+        /// <summary>
+        /// Determines whether a mod can be applied as a free mod to playlist items in the given match type.
+        /// </summary>
+        /// <param name="mod">The mod to test.</param>
+        /// <param name="type">The match type.</param>
+        public static bool IsValidFreeModForMatchType(Mod mod, MatchType type)
+        {
+            if (mod.Type == ModType.System || !mod.UserPlayable || !mod.HasImplementation)
+                return false;
+
+            switch (type)
+            {
+                case MatchType.Playlists:
+                    return true;
+
+                default:
+                    return mod.ValidForMultiplayerAsFreeMod;
+            }
         }
     }
 }

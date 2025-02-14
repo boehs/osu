@@ -1,4 +1,4 @@
-// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
 using System;
@@ -11,7 +11,7 @@ using osu.Game.Screens.Play;
 
 namespace osu.Game.Tests.Visual.Gameplay
 {
-    public class TestSceneFailAnimation : TestSceneAllRulesetPlayers
+    public partial class TestSceneFailAnimation : TestSceneAllRulesetPlayers
     {
         protected override Player CreatePlayer(Ruleset ruleset)
         {
@@ -29,7 +29,7 @@ namespace osu.Game.Tests.Visual.Gameplay
 
         protected override void AddCheckSteps()
         {
-            AddUntilStep("wait for fail", () => Player.HasFailed);
+            AddUntilStep("wait for fail", () => Player.GameplayState.HasFailed);
             AddUntilStep("wait for fail overlay", () => ((FailPlayer)Player).FailOverlay.State.Value == Visibility.Visible);
 
             // The pause screen and fail animation both ramp frequency.
@@ -37,7 +37,7 @@ namespace osu.Game.Tests.Visual.Gameplay
             AddAssert("frequency only ever decreased", () => !((FailPlayer)Player).FrequencyIncreased);
         }
 
-        private class FailPlayer : TestPlayer
+        private partial class FailPlayer : TestPlayer
         {
             public new FailOverlay FailOverlay => base.FailOverlay;
 
@@ -51,15 +51,16 @@ namespace osu.Game.Tests.Visual.Gameplay
             protected override void LoadComplete()
             {
                 base.LoadComplete();
-                HealthProcessor.FailConditions += (_, __) => true;
+                HealthProcessor.FailConditions += (_, _) => true;
             }
 
             private double lastFrequency = double.MaxValue;
 
-            protected override void Update()
+            protected override void UpdateAfterChildren()
             {
-                base.Update();
+                base.UpdateAfterChildren();
 
+                // This must be done in UpdateAfterChildren to allow the gameplay clock to have updated before checking values.
                 double freq = Beatmap.Value.Track.AggregateFrequency.Value;
 
                 FrequencyIncreased |= freq > lastFrequency;

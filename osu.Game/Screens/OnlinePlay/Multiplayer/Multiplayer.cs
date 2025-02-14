@@ -1,25 +1,29 @@
-// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
 using System.Diagnostics;
 using osu.Framework.Allocation;
+using osu.Framework.Extensions.ObjectExtensions;
+using osu.Framework.Logging;
 using osu.Framework.Screens;
 using osu.Game.Online.Multiplayer;
+using osu.Game.Online.Rooms;
 using osu.Game.Screens.OnlinePlay.Components;
 using osu.Game.Screens.OnlinePlay.Lounge;
 
 namespace osu.Game.Screens.OnlinePlay.Multiplayer
 {
-    public class Multiplayer : OnlinePlayScreen
+    public partial class Multiplayer : OnlinePlayScreen
     {
         [Resolved]
-        private MultiplayerClient client { get; set; }
+        private MultiplayerClient client { get; set; } = null!;
 
         protected override void LoadComplete()
         {
             base.LoadComplete();
 
             client.RoomUpdated += onRoomUpdated;
+            client.GameplayAborted += onGameplayAborted;
             onRoomUpdated();
         }
 
@@ -35,20 +39,46 @@ namespace osu.Game.Screens.OnlinePlay.Multiplayer
                 transitionFromResults();
         }
 
-        public override void OnResuming(IScreen last)
+        private void onGameplayAborted(GameplayAbortReason reason)
         {
-            base.OnResuming(last);
+            // If the server aborts gameplay for this user (due to loading too slow), exit gameplay screens.
+            if (!this.IsCurrentScreen())
+            {
+                switch (reason)
+                {
+                    case GameplayAbortReason.LoadTookTooLong:
+                        Logger.Log("Gameplay aborted because loading the beatmap took too long.", LoggingTarget.Runtime, LogLevel.Important);
+                        break;
+
+                    case GameplayAbortReason.HostAbortedTheMatch:
+                        Logger.Log("The host aborted the match.", LoggingTarget.Runtime, LogLevel.Important);
+                        break;
+                }
+
+                this.MakeCurrent();
+            }
+        }
+
+        public override void OnResuming(ScreenTransitionEvent e)
+        {
+            base.OnResuming(e);
 
             if (client.Room == null)
                 return;
 
-            if (!(last is MultiplayerPlayerLoader playerLoader))
+            Debug.Assert(client.LocalUser != null);
+
+            if (!(e.Last is MultiplayerPlayerLoader playerLoader))
+                return;
+
+            // Nothing needs to be done if already in the idle state (e.g. via load being aborted by the server).
+            if (client.LocalUser.State == MultiplayerUserState.Idle)
                 return;
 
             // If gameplay wasn't finished, then we have a simple path back to the idle state by aborting gameplay.
             if (!playerLoader.GameplayPassed)
             {
-                client.AbortGameplay();
+                client.AbortGameplay().FireAndForget();
                 return;
             }
 
@@ -71,12 +101,17 @@ namespace osu.Game.Screens.OnlinePlay.Multiplayer
 
         protected override LoungeSubScreen CreateLounge() => new MultiplayerLoungeSubScreen();
 
+        public void Join(Room room, string? password) => Schedule(() => Lounge.Join(room, password));
+
         protected override void Dispose(bool isDisposing)
         {
             base.Dispose(isDisposing);
 
-            if (client != null)
+            if (client.IsNotNull())
+            {
                 client.RoomUpdated -= onRoomUpdated;
+                client.GameplayAborted -= onGameplayAborted;
+            }
         }
     }
 }

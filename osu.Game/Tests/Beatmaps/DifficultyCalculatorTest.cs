@@ -1,7 +1,8 @@
 // Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
-using System;
+#nullable disable
+
 using System.IO;
 using System.Reflection;
 using NUnit.Framework;
@@ -22,10 +23,13 @@ namespace osu.Game.Tests.Beatmaps
 
         protected abstract string ResourceAssembly { get; }
 
-        protected void Test(double expected, string name, params Mod[] mods)
+        protected void Test(double expectedStarRating, int expectedMaxCombo, string name, params Mod[] mods)
         {
+            var attributes = CreateDifficultyCalculator(getBeatmap(name)).Calculate(mods);
+
             // Platform-dependent math functions (Pow, Cbrt, Exp, etc) may result in minute differences.
-            Assert.That(CreateDifficultyCalculator(getBeatmap(name)).Calculate(mods).StarRating, Is.EqualTo(expected).Within(0.00001));
+            Assert.That(attributes.StarRating, Is.EqualTo(expectedStarRating).Within(0.00001));
+            Assert.That(attributes.MaxCombo, Is.EqualTo(expectedMaxCombo));
         }
 
         private IWorkingBeatmap getBeatmap(string name)
@@ -49,7 +53,7 @@ namespace osu.Game.Tests.Beatmaps
 
         private Stream openResource(string name)
         {
-            string localPath = Path.GetDirectoryName(Uri.UnescapeDataString(new UriBuilder(Assembly.GetExecutingAssembly().CodeBase).Path)).AsNonNull();
+            string localPath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location).AsNonNull();
             return Assembly.LoadFrom(Path.Combine(localPath, $"{ResourceAssembly}.dll")).GetManifestResourceStream($@"{ResourceAssembly}.Resources.{name}");
         }
 

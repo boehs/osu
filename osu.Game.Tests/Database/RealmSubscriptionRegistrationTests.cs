@@ -1,23 +1,150 @@
 // Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
-using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using NUnit.Framework;
 using osu.Framework.Allocation;
+using osu.Framework.Extensions;
 using osu.Game.Beatmaps;
+using osu.Game.Database;
 using osu.Game.Rulesets;
 using osu.Game.Tests.Resources;
 using Realms;
-
-#nullable enable
 
 namespace osu.Game.Tests.Database
 {
     [TestFixture]
     public class RealmSubscriptionRegistrationTests : RealmTest
     {
+        [Test]
+        public void TestSubscriptionCollectionAndPropertyChanges()
+        {
+            int collectionChanges = 0;
+            int propertyChanges = 0;
+
+            ChangeSet? lastChanges = null;
+
+            RunTestWithRealm((realm, _) =>
+            {
+                var registration = realm.RegisterForNotifications(r => r.All<BeatmapSetInfo>(), onChanged);
+
+                realm.Run(r => r.Refresh());
+
+                realm.Write(r => r.Add(TestResources.CreateTestBeatmapSetInfo()));
+                realm.Run(r => r.Refresh());
+
+                Assert.That(collectionChanges, Is.EqualTo(1));
+                Assert.That(propertyChanges, Is.EqualTo(0));
+                Assert.That(lastChanges?.InsertedIndices, Has.One.Items);
+                Assert.That(lastChanges?.ModifiedIndices, Is.Empty);
+                Assert.That(lastChanges?.NewModifiedIndices, Is.Empty);
+
+                realm.Write(r => r.All<BeatmapSetInfo>().First().Beatmaps.First().EditorTimestamp = 5);
+                realm.Run(r => r.Refresh());
+
+                Assert.That(collectionChanges, Is.EqualTo(1));
+                Assert.That(propertyChanges, Is.EqualTo(1));
+                Assert.That(lastChanges?.InsertedIndices, Is.Empty);
+                Assert.That(lastChanges?.ModifiedIndices, Has.One.Items);
+                Assert.That(lastChanges?.NewModifiedIndices, Has.One.Items);
+
+                registration.Dispose();
+            });
+
+            void onChanged(IRealmCollection<BeatmapSetInfo> sender, ChangeSet? changes)
+            {
+                lastChanges = changes;
+
+                if (changes == null)
+                    return;
+
+                if (changes.HasCollectionChanges())
+                {
+                    Interlocked.Increment(ref collectionChanges);
+                }
+                else
+                {
+                    Interlocked.Increment(ref propertyChanges);
+                }
+            }
+        }
+
+        [Test]
+        public void TestSubscriptionInitialChangeSetNull()
+        {
+            ChangeSet? firstChanges = null;
+            int receivedChangesCount = 0;
+
+            RunTestWithRealm((realm, _) =>
+            {
+                var registration = realm.RegisterForNotifications(r => r.All<BeatmapSetInfo>(), onChanged);
+
+                realm.WriteAsync(r => r.Add(TestResources.CreateTestBeatmapSetInfo())).WaitSafely();
+
+                realm.Run(r => r.Refresh());
+
+                Assert.That(receivedChangesCount, Is.EqualTo(1));
+                Assert.That(firstChanges, Is.Null);
+
+                registration.Dispose();
+            });
+
+            void onChanged(IRealmCollection<BeatmapSetInfo> sender, ChangeSet? changes)
+            {
+                if (receivedChangesCount == 0)
+                    firstChanges = changes;
+
+                receivedChangesCount++;
+            }
+        }
+
+        [Test]
+        public void TestSubscriptionWithAsyncWrite()
+        {
+            ChangeSet? lastChanges = null;
+
+            RunTestWithRealm((realm, _) =>
+            {
+                var registration = realm.RegisterForNotifications(r => r.All<BeatmapSetInfo>(), onChanged);
+
+                realm.Run(r => r.Refresh());
+
+                realm.WriteAsync(r => r.Add(TestResources.CreateTestBeatmapSetInfo())).WaitSafely();
+
+                realm.Run(r => r.Refresh());
+
+                Assert.That(lastChanges?.InsertedIndices, Has.One.Items);
+
+                registration.Dispose();
+            });
+
+            void onChanged(IRealmCollection<BeatmapSetInfo> sender, ChangeSet? changes) => lastChanges = changes;
+        }
+
+        [Test]
+        public void TestPropertyChangedSubscription()
+        {
+            RunTestWithRealm((realm, _) =>
+            {
+                bool? receivedValue = null;
+
+                realm.Write(r => r.Add(TestResources.CreateTestBeatmapSetInfo()));
+
+                using (realm.SubscribeToPropertyChanged(r => r.All<BeatmapSetInfo>().First(), setInfo => setInfo.Protected, val => receivedValue = val))
+                {
+                    Assert.That(receivedValue, Is.False);
+
+                    realm.Write(r => r.All<BeatmapSetInfo>().First().Protected = true);
+
+                    realm.Run(r => r.Refresh());
+
+                    Assert.That(receivedValue, Is.True);
+                }
+            });
+        }
+
         [Test]
         public void TestSubscriptionWithContextLoss()
         {
@@ -37,7 +164,7 @@ namespace osu.Game.Tests.Database
                 resolvedItems = null;
                 lastChanges = null;
 
-                using (realm.BlockAllOperations())
+                using (realm.BlockAllOperations("testing"))
                     Assert.That(resolvedItems, Is.Empty);
 
                 realm.Write(r => r.Add(TestResources.CreateTestBeatmapSetInfo()));
@@ -55,7 +182,7 @@ namespace osu.Game.Tests.Database
                 testEventsArriving(false);
 
                 // And make sure even after another context loss we don't get firings.
-                using (realm.BlockAllOperations())
+                using (realm.BlockAllOperations("testing"))
                     Assert.That(resolvedItems, Is.Null);
 
                 realm.Write(r => r.Add(TestResources.CreateTestBeatmapSetInfo()));
@@ -86,7 +213,7 @@ namespace osu.Game.Tests.Database
                 }
             });
 
-            void onChanged(IRealmCollection<BeatmapSetInfo> sender, ChangeSet? changes, Exception error)
+            void onChanged(IRealmCollection<BeatmapSetInfo> sender, ChangeSet? changes)
             {
                 if (changes == null)
                     resolvedItems = sender;
@@ -113,7 +240,7 @@ namespace osu.Game.Tests.Database
 
                 Assert.That(beatmapSetInfo, Is.Not.Null);
 
-                using (realm.BlockAllOperations())
+                using (realm.BlockAllOperations("testing"))
                 {
                     // custom disposal action fired when context lost.
                     Assert.That(beatmapSetInfo, Is.Null);
@@ -127,11 +254,47 @@ namespace osu.Game.Tests.Database
 
                 Assert.That(beatmapSetInfo, Is.Null);
 
-                using (realm.BlockAllOperations())
+                using (realm.BlockAllOperations("testing"))
                     Assert.That(beatmapSetInfo, Is.Null);
 
                 realm.Run(r => r.Refresh());
                 Assert.That(beatmapSetInfo, Is.Null);
+            });
+        }
+
+        [Test]
+        public void TestPropertyChangedSubscriptionWithContextLoss()
+        {
+            RunTestWithRealm((realm, _) =>
+            {
+                bool? receivedValue = null;
+
+                realm.Write(r => r.Add(TestResources.CreateTestBeatmapSetInfo()));
+
+                var subscription = realm.SubscribeToPropertyChanged(
+                    r => r.All<BeatmapSetInfo>().First(),
+                    setInfo => setInfo.Protected,
+                    val => receivedValue = val);
+
+                Assert.That(receivedValue, Is.Not.Null);
+                receivedValue = null;
+
+                using (realm.BlockAllOperations("testing"))
+                {
+                }
+
+                // re-registration after context restore.
+                realm.Run(r => r.Refresh());
+                Assert.That(receivedValue, Is.Not.Null);
+
+                subscription.Dispose();
+                receivedValue = null;
+
+                using (realm.BlockAllOperations("testing"))
+                    Assert.That(receivedValue, Is.Null);
+
+                realm.Run(r => r.Refresh());
+                Assert.That(receivedValue, Is.Null);
             });
         }
     }

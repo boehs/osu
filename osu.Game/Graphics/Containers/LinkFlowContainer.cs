@@ -1,6 +1,8 @@
 ﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
+#nullable disable
+
 using osu.Game.Online.Chat;
 using System;
 using System.Linq;
@@ -10,12 +12,15 @@ using System.Collections.Generic;
 using osu.Framework.Graphics;
 using osu.Framework.Graphics.Containers;
 using osu.Framework.Localisation;
+using osu.Framework.Logging;
 using osu.Framework.Platform;
+using osu.Game.Online;
 using osu.Game.Users;
+using osu.Game.Localisation;
 
 namespace osu.Game.Graphics.Containers
 {
-    public class LinkFlowContainer : OsuTextFlowContainer
+    public partial class LinkFlowContainer : OsuTextFlowContainer
     {
         public LinkFlowContainer(Action<SpriteText> defaultCreationParameters = null)
             : base(defaultCreationParameters)
@@ -23,7 +28,7 @@ namespace osu.Game.Graphics.Containers
         }
 
         [Resolved(CanBeNull = true)]
-        private OsuGame game { get; set; }
+        private ILinkHandler linkHandler { get; set; }
 
         [Resolved]
         private GameHost host { get; set; }
@@ -43,9 +48,16 @@ namespace osu.Game.Graphics.Containers
 
             foreach (var link in links)
             {
+                string displayText = text.Substring(link.Index, link.Length);
+
+                if (previousLinkEnd > link.Index)
+                {
+                    Logger.Log($@"Link ""{link.Url}"" with text ""{displayText}"" overlaps previous link, ignoring.");
+                    continue;
+                }
+
                 AddText(text[previousLinkEnd..link.Index]);
 
-                string displayText = text.Substring(link.Index, link.Length);
                 object linkArgument = link.Argument;
                 string tooltip = displayText == link.Url ? null : link.Url;
 
@@ -71,7 +83,7 @@ namespace osu.Game.Graphics.Containers
         }
 
         public void AddUserLink(IUser user, Action<SpriteText> creationParameters = null)
-            => createLink(CreateChunkFor(user.Username, true, CreateSpriteText, creationParameters), new LinkDetails(LinkAction.OpenUserProfile, user), "view profile");
+            => createLink(CreateChunkFor(user.Username, true, CreateSpriteText, creationParameters), new LinkDetails(LinkAction.OpenUserProfile, user), ContextMenuStrings.ViewProfile);
 
         private void createLink(ITextPart textPart, LinkDetails link, LocalisableString tooltipText, Action action = null)
         {
@@ -79,8 +91,8 @@ namespace osu.Game.Graphics.Containers
             {
                 if (action != null)
                     action();
-                else if (game != null)
-                    game.HandleLink(link);
+                else if (linkHandler != null)
+                    linkHandler.HandleLink(link);
                 // fallback to handle cases where OsuGame is not available, ie. tournament client.
                 else if (link.Action == LinkAction.External)
                     host.OpenUrlExternally(link.Argument.ToString());

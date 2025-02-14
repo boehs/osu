@@ -1,6 +1,8 @@
 ﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
+#nullable disable
+
 using System;
 using System.Linq;
 using osu.Framework.Allocation;
@@ -19,12 +21,10 @@ using Realms;
 
 namespace osu.Game.Overlays.Music
 {
-    public class PlaylistOverlay : VisibilityContainer
+    public partial class PlaylistOverlay : VisibilityContainer
     {
         private const float transition_duration = 600;
-        private const float playlist_height = 510;
-
-        public IBindableList<Live<BeatmapSetInfo>> BeatmapSets => beatmapSets;
+        public const float PLAYLIST_HEIGHT = 510;
 
         private readonly BindableList<Live<BeatmapSetInfo>> beatmapSets = new BindableList<Live<BeatmapSetInfo>>();
 
@@ -83,9 +83,9 @@ namespace osu.Game.Overlays.Music
                 },
             };
 
-            filter.Search.OnCommit += (sender, newText) =>
+            filter.Search.OnCommit += (_, _) =>
             {
-                list.FirstVisibleSet.PerformRead(set =>
+                list.FirstVisibleSet?.PerformRead(set =>
                 {
                     BeatmapInfo toSelect = set.Beatmaps.FirstOrDefault();
 
@@ -102,15 +102,13 @@ namespace osu.Game.Overlays.Music
         {
             base.LoadComplete();
 
-            // tests might bind externally, in which case we don't want to involve realm.
-            if (beatmapSets.Count == 0)
-                beatmapSubscription = realm.RegisterForNotifications(r => r.All<BeatmapSetInfo>().Where(s => !s.DeletePending), beatmapsChanged);
+            beatmapSubscription = realm.RegisterForNotifications(r => r.All<BeatmapSetInfo>().Where(s => !s.DeletePending && !s.Protected), beatmapsChanged);
 
             list.Items.BindTo(beatmapSets);
             beatmap.BindValueChanged(working => list.SelectedSet.Value = working.NewValue.BeatmapSetInfo.ToLive(realm), true);
         }
 
-        private void beatmapsChanged(IRealmCollection<BeatmapSetInfo> sender, ChangeSet changes, Exception error)
+        private void beatmapsChanged(IRealmCollection<BeatmapSetInfo> sender, ChangeSet changes)
         {
             if (changes == null)
             {
@@ -123,7 +121,7 @@ namespace osu.Game.Overlays.Music
             foreach (int i in changes.InsertedIndices)
                 beatmapSets.Insert(i, sender[i].ToLive(realm));
 
-            foreach (int i in changes.DeletedIndices.OrderByDescending(i => i))
+            foreach (int i in changes.DeletedIndices.OrderDescending())
                 beatmapSets.RemoveAt(i);
         }
 
@@ -132,7 +130,7 @@ namespace osu.Game.Overlays.Music
             filter.Search.HoldFocus = true;
             Schedule(() => filter.Search.TakeFocus());
 
-            this.ResizeTo(new Vector2(1, playlist_height), transition_duration, Easing.OutQuint);
+            this.ResizeTo(new Vector2(1, RelativeSizeAxes.HasFlag(Axes.Y) ? 1f : PLAYLIST_HEIGHT), transition_duration, Easing.OutQuint);
             this.FadeIn(transition_duration, Easing.OutQuint);
         }
 

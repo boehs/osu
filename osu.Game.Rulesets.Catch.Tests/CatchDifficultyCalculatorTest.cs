@@ -1,4 +1,4 @@
-// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
 using NUnit.Framework;
@@ -12,15 +12,15 @@ namespace osu.Game.Rulesets.Catch.Tests
 {
     public class CatchDifficultyCalculatorTest : DifficultyCalculatorTest
     {
-        protected override string ResourceAssembly => "osu.Game.Rulesets.Catch";
+        protected override string ResourceAssembly => "osu.Game.Rulesets.Catch.Tests";
 
-        [TestCase(4.0505463516206195d, "diffcalc-test")]
-        public void Test(double expected, string name)
-            => base.Test(expected, name);
+        [TestCase(4.0505463516206195d, 127, "diffcalc-test")]
+        public void Test(double expectedStarRating, int expectedMaxCombo, string name)
+            => base.Test(expectedStarRating, expectedMaxCombo, name);
 
-        [TestCase(5.1696411260785498d, "diffcalc-test")]
-        public void TestClockRateAdjusted(double expected, string name)
-            => Test(expected, name, new CatchModDoubleTime());
+        [TestCase(5.1696411260785498d, 127, "diffcalc-test")]
+        public void TestClockRateAdjusted(double expectedStarRating, int expectedMaxCombo, string name)
+            => Test(expectedStarRating, expectedMaxCombo, name, new CatchModDoubleTime());
 
         protected override DifficultyCalculator CreateDifficultyCalculator(IWorkingBeatmap beatmap) => new CatchDifficultyCalculator(new CatchRuleset().RulesetInfo, beatmap);
 
